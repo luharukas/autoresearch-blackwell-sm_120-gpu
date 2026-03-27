@@ -11,17 +11,64 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 import gc
 import math
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, asdict
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from kernels import get_kernel
-cap = torch.cuda.get_device_capability()
-# varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
-repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
-fa3 = get_kernel(repo).flash_attn_interface
+
+def _load_attention_backend():
+    cap = torch.cuda.get_device_capability()
+    if cap == (9, 0):
+        try:
+            from kernels import get_kernel
+            fa3 = get_kernel("varunneal/flash-attention-3").flash_attn_interface
+            return "fa3", fa3, cap
+        except Exception as exc:
+            print(f"Falling back to PyTorch SDPA because FA3 failed to load on sm_{cap[0]}{cap[1]}: {exc}")
+    return "sdpa", None, cap
+
+
+ATTN_BACKEND, fa3, CUDA_CAPABILITY = _load_attention_backend()
+
+
+def _make_sliding_causal_mask(seq_len, window_size, device):
+    if window_size is None:
+        return None
+    left_window, right_window = window_size
+    if right_window != 0:
+        raise NotImplementedError("Only left-window causal attention is implemented for the SDPA fallback.")
+    if left_window < 0 or left_window >= seq_len:
+        return None
+    q_pos = torch.arange(seq_len, device=device).unsqueeze(1)
+    k_pos = torch.arange(seq_len, device=device).unsqueeze(0)
+    return (k_pos <= q_pos) & ((q_pos - k_pos) < left_window)
+
+
+def attention_fn(q, k, v, window_size):
+    if ATTN_BACKEND == "fa3":
+        return fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+
+    q = q.transpose(1, 2)
+    k = k.transpose(1, 2)
+    v = v.transpose(1, 2)
+    attn_mask = _make_sliding_causal_mask(q.size(-2), window_size, q.device)
+    enable_gqa = q.size(1) != k.size(1)
+    sdpa_ctx = nullcontext()
+    if enable_gqa:
+        sdpa_ctx = sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.MATH])
+    with sdpa_ctx:
+        y = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            is_causal=attn_mask is None,
+            enable_gqa=enable_gqa,
+        )
+    return y.transpose(1, 2)
 
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
 
@@ -90,7 +137,7 @@ class CausalSelfAttention(nn.Module):
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q, k = norm(q), norm(k)
 
-        y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+        y = attention_fn(q, k, v, window_size)
         y = y.contiguous().view(B, T, -1)
         y = self.c_proj(y)
         return y
@@ -461,6 +508,7 @@ torch.set_float32_matmul_precision("high")
 device = torch.device("cuda")
 autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
 H100_BF16_PEAK_FLOPS = 989.5e12
+print(f"Attention backend: {ATTN_BACKEND} on sm_{CUDA_CAPABILITY[0]}{CUDA_CAPABILITY[1]}")
 
 tokenizer = Tokenizer.from_directory()
 vocab_size = tokenizer.get_vocab_size()
