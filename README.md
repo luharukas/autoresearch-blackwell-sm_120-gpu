@@ -1,6 +1,8 @@
-# autoresearch
+# autoresearch-blackwell-sm_120-gpu
 
 ![teaser](progress.png)
+
+> Fork note: this branch is tuned for Blackwell-class `sm_120` GPUs and other non-Hopper CUDA devices. It keeps the upstream autoresearch workflow, but switches to a PyTorch SDPA attention fallback when Flash Attention 3 is unavailable, uses full attention everywhere (`WINDOW_PATTERN="L"`), and reduces batch sizes to `TOTAL_BATCH_SIZE=2**17` and `DEVICE_BATCH_SIZE=64`.
 
 *One day, frontier AI research used to be done by meat computers in between eating, sleeping, having other fun, and synchronizing once in a while using sound wave interconnect in the ritual of "group meeting". That era is long gone. Research is now entirely the domain of autonomous swarms of AI agents running across compute cluster megastructures in the skies. The agents claim that we are now in the 10,205th generation of the code base, in any case no one could tell if that's right or wrong as the "code" is now a self-modifying binary that has grown beyond human comprehension. This repo is the story of how it all began. -@karpathy, March 2026*.
 
@@ -20,7 +22,7 @@ If you are new to neural networks, this ["Dummy's Guide"](https://x.com/hooeem/s
 
 ## Quick start
 
-**Requirements:** A single NVIDIA GPU (tested on H100), Python 3.10+, [uv](https://docs.astral.sh/uv/).
+**Requirements:** A single NVIDIA GPU, Python 3.10+, [uv](https://docs.astral.sh/uv/). This fork is tuned for Blackwell-class `sm_120` GPUs and other non-Hopper CUDA devices, while still keeping the Hopper Flash Attention 3 path when available.
 
 ```bash
 
@@ -66,7 +68,7 @@ pyproject.toml  — dependencies
 
 ## Platform support
 
-This code currently requires that you have a single NVIDIA GPU. In principle it is quite possible to support CPU, MPS and other platforms but this would also bloat the code. I'm not 100% sure that I want to take this on personally right now. People can reference (or have their agents reference) the full/parent nanochat repository that has wider platform support and shows the various solutions (e.g. a Flash Attention 3 kernels fallback implementation, generic device support, autodetection, etc.), feel free to create forks or discussions for other platforms and I'm happy to link to them here in the README in some new notable forks section or etc.
+This code currently requires that you have a single NVIDIA GPU. This fork specifically smooths out the attention path for Blackwell-class `sm_120` GPUs and other non-Hopper CUDA devices by falling back to PyTorch SDPA when FA3 is not available, while still using FA3 on Hopper. In principle it is quite possible to support CPU, MPS and other platforms but this would also bloat the code. I'm not 100% sure that I want to take this on personally right now. People can reference (or have their agents reference) the full/parent nanochat repository that has wider platform support and shows the various solutions (e.g. a Flash Attention 3 kernels fallback implementation, generic device support, autodetection, etc.), feel free to create forks or discussions for other platforms and I'm happy to link to them here in the README in some new notable forks section or etc.
 
 Seeing as there seems to be a lot of interest in tinkering with autoresearch on much smaller compute platforms than an H100, a few extra words. If you're going to try running autoresearch on smaller computers (Macbooks etc.), I'd recommend one of the forks below. On top of this, here are some recommendations for how to tune the defaults for much smaller models for aspiring forks:
 
